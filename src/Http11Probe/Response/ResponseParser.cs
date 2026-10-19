@@ -106,7 +106,36 @@ public static class ResponseParser
             Headers = headers,
             IsEmpty = false,
             RawResponse = rawResponse,
-            Body = body
+            Body = body,
+            BufferedStatuses = CountStatusLines(data[..length])
         };
+    }
+
+    /// <summary>Counts every "HTTP/1.x NNN" status line in the raw buffer so a
+    /// pipelined answer pair can be judged as 2xx + 2xx.</summary>
+    private static int[] CountStatusLines(ReadOnlySpan<byte> data)
+    {
+        List<int> statuses = [];
+        for (var i = 0; i + 12 <= data.Length;)
+        {
+            var idx = data[i..].IndexOf("HTTP/1."u8);
+            if (idx < 0)
+                break;
+            i += idx;
+            // "HTTP/1." + version digit + space + three status digits
+            if (i + 12 <= data.Length
+                && data[i + 7] >= (byte)'0' && data[i + 7] <= (byte)'9'
+                && data[i + 8] == (byte)' '
+                && data[i + 9] >= (byte)'0' && data[i + 9] <= (byte)'9'
+                && data[i + 10] >= (byte)'0' && data[i + 10] <= (byte)'9'
+                && data[i + 11] >= (byte)'0' && data[i + 11] <= (byte)'9')
+            {
+                statuses.Add((data[i + 9] - (byte)'0') * 100
+                             + (data[i + 10] - (byte)'0') * 10
+                             + (data[i + 11] - (byte)'0'));
+            }
+            i += 7;
+        }
+        return [.. statuses];
     }
 }

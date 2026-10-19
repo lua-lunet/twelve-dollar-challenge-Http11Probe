@@ -23,6 +23,10 @@ timeoutOption.DefaultValueFactory = _ => 5;
 
 var outputOption = new Option<string?>("--output") { Description = "Write JSON results to this file path" };
 
+var profileOption = new Option<string>("--profile") { Description = "Judgement lens for the transport fuzz steps: generic (RFC allow-lists, judges any server) | subset (lunet transport subset: hard 501 for TE: chunked, hard 400 for HTTP/1.0 and pipelining)" };
+profileOption.AcceptOnlyFromAmong(ProbeProfile.Generic, ProbeProfile.Subset);
+profileOption.DefaultValueFactory = _ => ProbeProfile.Generic;
+
 var verboseOption = new Option<bool>("--verbose", "-v") { Description = "Print the raw request/response for each step" };
 verboseOption.DefaultValueFactory = _ => false;
 
@@ -36,6 +40,7 @@ var rootCommand = new RootCommand("twelve-dollar-challenge-Http11Probe — fuzze
     testOption,
     timeoutOption,
     outputOption,
+    profileOption,
     verboseOption
 };
 
@@ -49,9 +54,10 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
     var testIds = parseResult.GetValue(testOption);
     var timeout = parseResult.GetValue(timeoutOption);
     var outputPath = parseResult.GetValue(outputOption);
+    var profile = parseResult.GetValue(profileOption)!;
     var verbose = parseResult.GetValue(verboseOption);
 
-    Console.WriteLine($"  Http11Probe targeting {host}:{port}");
+    Console.WriteLine($"  Http11Probe targeting {host}:{port} — profile: {profile}");
     Console.WriteLine();
 
     var options = new ProbeOptions
@@ -61,7 +67,8 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         Token = token,
         KnownPostId = knownPostId,
         ConnectTimeout = TimeSpan.FromSeconds(timeout),
-        ReadTimeout = TimeSpan.FromSeconds(timeout)
+        ReadTimeout = TimeSpan.FromSeconds(timeout),
+        Profile = profile
     };
 
     var endpoints = ChallengeEndpointSuite.GetEndpoints(options).ToList();

@@ -20,8 +20,8 @@ public static class ChallengeEndpointSuite
 
     public static IReadOnlyList<ChallengeEndpoint> GetEndpoints(ProbeOptions o) =>
     [
-        Health(),
-        Feed(),
+        Health(o),
+        Feed(o),
         PostsRead(o),
         PostsCreate(o),
         PostsLike(o)
@@ -54,6 +54,15 @@ public static class ChallengeEndpointSuite
     private static string TeChunked(string method, string target, string auth) =>
         $"{method} {target} HTTP/1.1\r\nHost: {{h}}\r\nAuthorization: {auth}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
 
+    // Valid single-chunk request (generic profile): one chunk carrying a complete
+    // JSON body, then the zero terminator. A recipient MUST decode this (RFC 9112 §7.1).
+    private static string ChunkedCreate(string auth)
+    {
+        var body = JsonBody(new { body = "chunky" });
+        var hex = $"{Encoding.UTF8.GetByteCount(body):X2}";
+        return $"POST /posts HTTP/1.1\r\nHost: {{h}}\r\nAuthorization: {auth}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{hex}\r\n{body}\r\n0\r\n\r\n";
+    }
+
     // A bare non-HTTP line with a CRLF terminator: not a request line at all.
     private static string ParseError => "GARBAGE\r\n\r\n";
 
@@ -61,22 +70,46 @@ public static class ChallengeEndpointSuite
         $"GET {target} HTTP/1.1\r\nHost: {o.HostHeader}\r\n\r\nGET {target} HTTP/1.1\r\nHost: {o.HostHeader}\r\n\r\n";
 
     // ── reachable-path fuzz steps (same four transport cases, retargeted) ──────
+    // generic profile: the original probe's RFC allow-lists — a valid chunked body
+    // MUST be served (2xx), a plain HTTP/1.0 request MUST be served (2xx) and closes,
+    // a pipelined GET pair is answered 2xx + 2xx, a parse error closes.
+    // subset profile: the lunet transport subset's exact answers.
 
-    private static ProbeStep FuzzTe(string id, string method, string target, bool withAuth) => new()
-    {
-        Id = id,
-        Description = $"{method} {target} with Transfer-Encoding: chunked is rejected (TE never served)",
-        RequestFactory = opts => TeChunked(method, target, opts.Bearer),
-        Expected = new StatusOnlyExpectation { Status = 501 }
-    };
+    private static ProbeStep FuzzTe(ProbeOptions o, string id, string method, string target, bool withAuth) => o.IsSubset
+        ? new ProbeStep
+        {
+            Id = id,
+            Description = $"{method} {target} with Transfer-Encoding: chunked is rejected (TE never served)",
+            RequestFactory = opts => TeChunked(method, target, opts.Bearer),
+            Expected = new StatusOnlyExpectation { Status = 501 }
+        }
+        : new ProbeStep
+        {
+            Id = id,
+            Description = "valid single-chunk body on POST /posts is served (RFC 9112 §7.1: chunked MUST be decoded)",
+            RequestFactory = opts => ChunkedCreate(opts.Bearer),
+            Expected = new AcceptedExpectation()
+        };
 
-    private static ProbeStep FuzzHttp10(string id, string method, string target, bool withAuth) => new()
-    {
-        Id = id,
-        Description = $"{method} {target} spoken over HTTP/1.0 is rejected",
-        RequestFactory = opts => Req(method, target, withAuth ? opts.Bearer : null, null, version: "1.0"),
-        Expected = new StatusOnlyExpectation { Status = 400 }
-    };
+    private static ProbeStep FuzzHttp10(ProbeOptions o, string id, string method, string target, bool withAuth) => o.IsSubset
+        ? new ProbeStep
+        {
+            Id = id,
+            Description = $"{method} {target} spoken over HTTP/1.0 is rejected",
+            RequestFactory = opts => Req(method, target, withAuth ? opts.Bearer : null, null, version: "1.0"),
+            Expected = new StatusOnlyExpectation { Status = 400 }
+        }
+        : new ProbeStep
+        {
+            Id = id,
+            Description = method == "POST"
+                ? "POST /posts with a body over plain HTTP/1.0 is served and the connection closes"
+                : $"{method} {target} over plain HTTP/1.0 is served and the connection closes",
+            RequestFactory = opts => method == "POST"
+                ? Req("POST", "/posts", opts.Bearer, JsonBody(new { body = "http10" }), version: "1.0")
+                : Req(method, target, withAuth ? opts.Bearer : null, null, version: "1.0"),
+            Expected = new Http10CloseExpectation()
+        };
 
     private static ProbeStep FuzzParseError(string id) => new()
     {
@@ -86,12 +119,14 @@ public static class ChallengeEndpointSuite
         Expected = new ConnectionClosedExpectation()
     };
 
-    private static ProbeStep FuzzPipeline(string id, string target) => new()
+    private static ProbeStep FuzzPipeline(ProbeOptions o, string id, string subsetTarget, string genericTarget) => new()
     {
         Id = id,
-        Description = $"pipelined GET pair on {target} gets a hard 400, connection closed",
-        RequestFactory = opts => Pipelined(opts, target),
-        Expected = new PipelineHard400Expectation()
+        Description = o.IsSubset
+            ? $"pipelined GET pair on {subsetTarget} gets a hard 400, connection closed"
+            : $"pipelined GET pair on {genericTarget} is answered 2xx + 2xx (RFC 9112 §9.3)",
+        RequestFactory = opts => Pipelined(opts, o.IsSubset ? subsetTarget : genericTarget),
+        Expected = o.IsSubset ? new PipelineHard400Expectation() : new PipelinedPairExpectation()
     };
 
     private static ProbeStep IdValidation(string id, string method, string target, string action) => new()
@@ -104,16 +139,16 @@ public static class ChallengeEndpointSuite
 
     // ── endpoints ────────────────────────────────────────────────────────────────
 
-    private static ChallengeEndpoint Health() => new()
+    private static ChallengeEndpoint Health(ProbeOptions o) => new()
     {
         Name = "health",
         Description = "GET /health",
         Steps =
         [
-            FuzzTe("health.te-chunked", "GET", "/feed", withAuth: true),
-            FuzzHttp10("health.http10", "GET", "/health", withAuth: true),
+            FuzzTe(o, "health.te-chunked", "GET", "/feed", withAuth: true),
+            FuzzHttp10(o, "health.http10", "GET", "/health", withAuth: true),
             FuzzParseError("health.parse-error"),
-            FuzzPipeline("health.pipeline", "/health"),
+            FuzzPipeline(o, "health.pipeline", "/health", "/health"),
             new ProbeStep
             {
                 Id = "health.ok",
@@ -129,16 +164,16 @@ public static class ChallengeEndpointSuite
         ]
     };
 
-    private static ChallengeEndpoint Feed() => new()
+    private static ChallengeEndpoint Feed(ProbeOptions o) => new()
     {
         Name = "feed",
         Description = "GET /feed (db-blind: shape and count, not golden bytes)",
         Steps =
         [
-            FuzzTe("feed.te-chunked", "GET", "/feed", withAuth: true),
-            FuzzHttp10("feed.http10", "GET", "/feed", withAuth: true),
+            FuzzTe(o, "feed.te-chunked", "GET", "/feed", withAuth: true),
+            FuzzHttp10(o, "feed.http10", "GET", "/feed", withAuth: true),
             FuzzParseError("feed.parse-error"),
-            FuzzPipeline("feed.pipeline", "/feed"),
+            FuzzPipeline(o, "feed.pipeline", "/feed", "/feed"),
             new ProbeStep
             {
                 Id = "feed.ok",
@@ -174,10 +209,10 @@ public static class ChallengeEndpointSuite
                 RequestFactory = opts => Req("GET", "/posts/999999999", opts.Bearer, null),
                 Expected = new ExactStatusBodyExpectation { Status = 404, Body = "{\"error\":\"post not found\"}" }
             },
-            FuzzTe("posts-read.te-chunked", "GET", $"/posts/{o.KnownPostId}", withAuth: true),
-            FuzzHttp10("posts-read.http10", "GET", $"/posts/{o.KnownPostId}", withAuth: false),
+            FuzzTe(o, "posts-read.te-chunked", "GET", $"/posts/{o.KnownPostId}", withAuth: true),
+            FuzzHttp10(o, "posts-read.http10", "GET", $"/posts/{o.KnownPostId}", withAuth: false),
             FuzzParseError("posts-read.parse-error"),
-            FuzzPipeline("posts-read.pipeline", $"/posts/{o.KnownPostId}"),
+            FuzzPipeline(o, "posts-read.pipeline", $"/posts/{o.KnownPostId}", $"/posts/{o.KnownPostId}"),
             new ProbeStep
             {
                 Id = "posts-read.ok",
@@ -296,10 +331,10 @@ public static class ChallengeEndpointSuite
                 RequestFactory = opts => Req("POST", "/posts", opts.Bearer, JsonBody(new { body = new string('a', 501) })),
                 Expected = new ExactStatusBodyExpectation { Status = 400, Body = "{\"error\":\"body must be at most 500 characters\"}" }
             },
-            FuzzTe("posts.te-chunked", "POST", "/posts", withAuth: true),
-            FuzzHttp10("posts.http10", "POST", "/posts", withAuth: true),
+            FuzzTe(o, "posts.te-chunked", "POST", "/posts", withAuth: true),
+            FuzzHttp10(o, "posts.http10", "POST", "/posts", withAuth: true),
             FuzzParseError("posts.parse-error"),
-            FuzzPipeline("posts.pipeline", "/feed"),
+            FuzzPipeline(o, "posts.pipeline", "/feed", "/feed"),
             new ProbeStep
             {
                 Id = "posts.ok",
@@ -344,10 +379,10 @@ public static class ChallengeEndpointSuite
                 RequestFactory = opts => Req("POST", "/posts/999999999/like", opts.Bearer, null),
                 Expected = new ExactStatusBodyExpectation { Status = 404, Body = "{\"error\":\"post not found\"}" }
             },
-            FuzzTe("like.te-chunked", "POST", $"/posts/{o.KnownPostId}/like", withAuth: true),
-            FuzzHttp10("like.http10", "POST", $"/posts/{o.KnownPostId}/like", withAuth: true),
+            FuzzTe(o, "like.te-chunked", "POST", $"/posts/{o.KnownPostId}/like", withAuth: true),
+            FuzzHttp10(o, "like.http10", "POST", $"/posts/{o.KnownPostId}/like", withAuth: true),
             FuzzParseError("like.parse-error"),
-            FuzzPipeline("like.pipeline", $"/posts/{o.KnownPostId}/like"),
+            FuzzPipeline(o, "like.pipeline", $"/posts/{o.KnownPostId}/like", $"/posts/{o.KnownPostId}"),
             new ProbeStep
             {
                 Id = "like.ok-first",

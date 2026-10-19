@@ -29,7 +29,7 @@ public sealed class ChallengeRunner
         }
 
         totalSw.Stop();
-        return new ChallengeRunReport { Endpoints = outcomes, TotalDuration = totalSw.Elapsed };
+        return new ChallengeRunReport { Profile = _options.Profile, Endpoints = outcomes, TotalDuration = totalSw.Elapsed };
     }
 
     private async Task<EndpointOutcome> RunEndpointAsync(ChallengeEndpoint endpoint, Action<StepOutcome>? onStep)

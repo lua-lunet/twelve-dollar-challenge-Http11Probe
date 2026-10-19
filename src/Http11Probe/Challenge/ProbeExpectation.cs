@@ -111,6 +111,69 @@ public sealed class ConnectionClosedExpectation : ProbeExpectation
     public override string Describe() => "connection closed (parse error)";
 }
 
+/// <summary>Valid chunked body (generic profile): a recipient MUST be able to parse
+/// and decode the chunked transfer coding (RFC 9112 §7.1), so the request must be
+/// served normally — 2xx. A 4xx/5xx or a close without a response is a FAIL.</summary>
+public sealed class AcceptedExpectation : ProbeExpectation
+{
+    public override ProbeVerdict Evaluate(HttpResponse? response, ConnectionEnding ending)
+    {
+        if (response is null)
+            return ProbeVerdict.Fail("no complete HTTP response for a valid chunked body (connection closed without one)");
+        if (response.StatusCode is < 200 or >= 300)
+            return ProbeVerdict.Fail($"valid chunked body must be accepted (2xx), got {response.StatusCode} {response.Body?.TrimEnd('\r', '\n')}");
+        return ProbeVerdict.Ok();
+    }
+
+    public override string Describe() => "2xx (valid chunked body accepted)";
+}
+
+/// <summary>Plain HTTP/1.0 with Host (generic profile): the request must be served —
+/// 2xx — and the connection closed (HTTP/1.0 defaults to close, RFC 9112 §9.3).
+/// A 400 to a well-formed HTTP/1.0 request is a FAIL.</summary>
+public sealed class Http10CloseExpectation : ProbeExpectation
+{
+    public override ProbeVerdict Evaluate(HttpResponse? response, ConnectionEnding ending)
+    {
+        if (response is null)
+            return ProbeVerdict.Fail("no complete HTTP response (connection closed without one)");
+        if (response.StatusCode is < 200 or >= 300)
+            return ProbeVerdict.Fail($"a plain HTTP/1.0 request must be served (2xx + close), got {response.StatusCode} {response.Body?.TrimEnd('\r', '\n')}");
+        if (ending != ConnectionEnding.ClosedByServer)
+            return ProbeVerdict.Fail($"answered {response.StatusCode} but kept serving — HTTP/1.0 without Connection: keep-alive closes the connection");
+        return ProbeVerdict.Ok();
+    }
+
+    public override string Describe() => "2xx + connection close";
+}
+
+/// <summary>Pipelined request pair (generic profile): both pipelined GETs must be
+/// answered — 2xx + 2xx (RFC 9112 §9.3 pipelining baseline).</summary>
+public sealed class PipelinedPairExpectation : ProbeExpectation
+{
+    public override ProbeVerdict Evaluate(HttpResponse? response, ConnectionEnding ending)
+    {
+        if (response is null)
+            return ProbeVerdict.Fail(ending == ConnectionEnding.ClosedByServer
+                ? "connection closed without any response to the pipelined pair"
+                : "no response at all to the pipelined pair");
+        var statuses = response.BufferedStatuses;
+        if (statuses.Count == 0 || statuses[0] != response.StatusCode)
+            return ProbeVerdict.Fail($"buffer did not carry the first response's status line {response.StatusCode}");
+        if (response.StatusCode is < 200 or >= 300)
+            return ProbeVerdict.Fail($"first pipelined GET must be 2xx, got {response.StatusCode} {response.Body?.TrimEnd('\r', '\n')}");
+        if (statuses.Count < 2)
+            return ProbeVerdict.Fail(ending == ConnectionEnding.ClosedByServer
+                ? $"first GET got {response.StatusCode} but the server closed before answering the second pipelined GET"
+                : $"only one response arrived for the pipelined pair (first was {response.StatusCode})");
+        if (statuses[1] is < 200 or >= 300)
+            return ProbeVerdict.Fail($"second pipelined GET must be 2xx, got {statuses[1]}");
+        return ProbeVerdict.Ok();
+    }
+
+    public override string Describe() => "2xx + 2xx (pipelined pair)";
+}
+
 /// <summary>Pipelined request pair: the first response must be a hard 400 and the
 /// connection must end closed.</summary>
 public sealed class PipelineHard400Expectation : ProbeExpectation
@@ -248,6 +311,7 @@ public sealed class EndpointOutcome
 
 public sealed class ChallengeRunReport
 {
+    public required string Profile { get; init; }
     public required List<EndpointOutcome> Endpoints { get; init; }
     public required TimeSpan TotalDuration { get; init; }
 

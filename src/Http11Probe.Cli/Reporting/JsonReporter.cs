@@ -19,6 +19,7 @@ public static class JsonReporter
         {
             summary = new
             {
+                profile = report.Profile,
                 allPassed = report.AllPassed,
                 endpoints = report.Endpoints.Count,
                 steps = report.Endpoints.Sum(e => e.StepOutcomes.Count),
