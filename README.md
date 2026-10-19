@@ -5,6 +5,11 @@ pared back to a fuzz test of the five official endpoints of the
 [twelve-dollar-server-challenge](https://github.com/arjaythedev/twelve-dollar-server-challenge)
 feed API (`SPEC.md` + `test/test.sh` at the challenge repo root are the contract).
 
+This fork is customised to test a valid submission: point it at any server that
+contains a valid implementation of the challenge endpoints — locally on the
+developer machine or inside the evaluation lima VM — and its PASS/FAIL verdict
+covers each named endpoint being fuzz-first compliant with the official contract.
+
 ## What it does
 
 Five endpoints, in order: `/health`, `/feed`, `GET /posts/:id`, `POST /posts`,
