@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Http11Probe.Runner;
-using Http11Probe.TestCases;
+using Http11Probe.Challenge;
 
 namespace Http11Probe.Cli.Reporting;
 
@@ -14,39 +13,39 @@ public static class JsonReporter
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    public static string Generate(TestRunReport report)
+    public static string Generate(ChallengeRunReport report)
     {
         var output = new
         {
             summary = new
             {
-                total = report.Results.Count,
-                scored = report.ScoredCount,
-                passed = report.PassCount,
-                failed = report.FailCount,
-                warnings = report.WarnCount,
-                errors = report.ErrorCount,
-                skipped = report.SkipCount,
-                durationMs = report.TotalDuration.TotalMilliseconds
+                allPassed = report.AllPassed,
+                endpoints = report.Endpoints.Count,
+                steps = report.Endpoints.Sum(e => e.StepOutcomes.Count),
+                passed = report.Endpoints.SelectMany(e => e.StepOutcomes).Count(s => s.Pass),
+                durationMs = report.TotalDuration.TotalMilliseconds,
+                skipped = ChallengeEndpointSuite.Skipped.Select(s => new { s.Id, s.Why })
             },
-            results = report.Results.Select(r => new
+            endpoints = report.Endpoints.Select(e => new
             {
-                id = r.TestCase.Id,
-                description = r.TestCase.Description,
-                category = r.TestCase.Category.ToString(),
-                rfcReference = r.TestCase.RfcReference,
-                scored = r.TestCase.Scored,
-                rfcLevel = r.TestCase.RfcLevel.ToString(),
-                expected = r.TestCase.Expected.GetDescription(),
-                verdict = r.Verdict.ToString(),
-                statusCode = r.Response?.StatusCode,
-                connectionState = r.ConnectionState.ToString(),
-                error = r.ErrorMessage,
-                durationMs = r.Duration.TotalMilliseconds,
-                rawRequest = r.RawRequest,
-                rawResponse = r.Response?.RawResponse,
-                behavioralNote = r.BehavioralNote,
-                doubleFlush = r.DrainCaughtData ? true : (bool?)null
+                e.Endpoint.Name,
+                e.Endpoint.Description,
+                passed = e.Passed,
+                failureStepId = e.FailureStepId,
+                failureReason = e.FailureReason,
+                durationMs = e.Duration.TotalMilliseconds,
+                steps = e.StepOutcomes.Select(s => new
+                {
+                    id = s.Step.Id,
+                    description = s.Step.Description,
+                    verdict = s.Pass ? "pass" : "fail",
+                    expected = s.Step.Expected.Describe(),
+                    reason = s.Reason,
+                    connectionState = s.ConnectionEnding.ToString(),
+                    statusCode = s.Response?.StatusCode,
+                    body = s.Response?.Body,
+                    rawRequest = s.RawRequest
+                })
             })
         };
 

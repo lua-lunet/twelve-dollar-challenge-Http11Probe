@@ -1,7 +1,0 @@
-{
-  "name": "fulmine-server",
-  "private": true,
-  "dependencies": {
-    "express": "npm:fulmine.js@^5.21.4"
-  }
-}

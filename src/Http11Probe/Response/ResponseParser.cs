@@ -9,7 +9,9 @@ public static class ResponseParser
         if (length == 0)
             return null;
 
-        var text = Encoding.ASCII.GetString(data[..length]);
+        // UTF-8, not ASCII: bodies carry non-ASCII post text; ASCII.GetString would
+        // silently turn every multi-byte codepoint into '?' and fail shape checks.
+        var text = Encoding.UTF8.GetString(data[..length]);
 
         // Find end of status line
         var lineEnd = text.IndexOf('\n');
@@ -86,7 +88,9 @@ public static class ResponseParser
             if (bodyStart < text.Length)
             {
                 var bodyText = text[bodyStart..];
-                body = bodyText.Length > 4096 ? bodyText[..4096] : bodyText;
+        // The feed's {"posts":[<post> × 20]} body runs ~6 KB — keep the full body so
+        // shape checks see whole JSON.
+                body = bodyText.Length > 65536 ? bodyText[..65536] : bodyText;
             }
         }
 
